@@ -1,0 +1,48 @@
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert/strict');
+const ts = require('typescript');
+const source = fs.readFileSync(process.argv[2] || 'subtitle-engine/subtitle-engine.ts', 'utf8');
+const instrumented = source.replace('        async function loadMediaData(anilistId: number) {', `        globalThis.test = {fetchSubtitles,fetchJimaku,filteredSubtitleResults,subtitleResults,imdbRef,seasonRef,episodeRef,langRef,sourceRef};\n        async function loadMediaData(anilistId: number) {`);
+const prefs = {source:'all',language:'spanish',format:'all',wyzieKey:'fixture-key',jimakuKey:'fixture-jimaku',autoSelect:'none'};
+let register, render, response, navigate;
+const events = {};
+const tray = new Proxy({}, {get:(_, name) => {
+  if (name === 'render') return cb => {render = cb};
+  if (name === 'onOpen') return ()=>{};
+  if (name === 'text') return text => {assert.equal(typeof text,'string','text is required');return {text}};
+  if (name === 'img') return src => {assert.equal(typeof src,'string','image src is required');return {src}};
+  return (...args)=>({kind:name,args});
+}});
+const context = {console,Error,$getUserPreference:k=>prefs[k] || '',$ui:{register:cb=>{register=cb}},$habari:{parse:()=>({episode_number:'1'})},fetch:async()=>response};
+vm.createContext(context);
+vm.runInContext(ts.transpileModule(instrumented,{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,context);
+context.init();
+register({newTray:()=>tray,state:initial=>{let value=initial;return {get:()=>value,set:next=>{value=next}}},fieldRef:initial=>({current:initial,setValue(next){this.current=next}}),registerEventHandler:(name,cb)=>{events[name]=cb},setTimeout:()=>{},videoCore:{addEventListener:()=>{},getCurrentPlaybackInfo:async()=>({media:{id:'1535'}})},screen:{onNavigate:cb=>{navigate=cb}},toast:{warning:()=>{},error:()=>{},success:()=>{}},eventHandler:()=>''});
+async function run() {
+  const t = context.test;
+  t.imdbRef.setValue('13916');t.seasonRef.setValue('1');t.episodeRef.setValue('1');
+  response={ok:true,status:200,json:async()=>[{release:null,fileName:null,display:'Spanish (Mexico)',language:'es-MX',format:'srt',source:'ai',media:null,url:'https://example.invalid/translated.srt'}]};
+  await t.fetchSubtitles();render();
+  assert.equal(t.filteredSubtitleResults.get()[0].release,'AI translation — Spanish (Mexico)');
+  assert(t.filteredSubtitleResults.get()[0].media);
+  await navigate({pathname:'/entry',searchParams:{id:'212888'}});
+  assert.equal(t.subtitleResults.get().length,0,'New show must clear old subtitle results');
+  t.sourceRef.setValue('jimakuSource');
+  response={ok:true,status:200,json:async()=>[]};
+  await t.fetchJimaku(212888,1,1,12);
+  assert.equal(t.filteredSubtitleResults.get().length,0,'Jimaku no-entry response must not retain Wyzie results');
+  render();
+  let resolveOld;
+  const oldData=new Promise(resolve=>{resolveOld=resolve});
+  context.fetch=async()=>({ok:true,status:200,json:async()=>oldData});
+  const oldSearch=t.fetchSubtitles();
+  await new Promise(setImmediate);
+  assert(resolveOld);
+  await navigate({pathname:'/entry',searchParams:{id:'1535'}});
+  resolveOld([{release:'Old show',display:'Spanish',language:'es',format:'srt',url:'https://example.invalid/old.srt'}]);
+  await oldSearch;
+  assert.equal(t.subtitleResults.get().length,0,'Late response from old show must be ignored');
+  console.log('Passed: missing AI titles render safely; navigation and empty Jimaku searches clear old results.');
+}
+run().catch(e=>{console.error(e);process.exit(1)});

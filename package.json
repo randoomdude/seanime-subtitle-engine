@@ -1,0 +1,13 @@
+{
+  "name": "seanime-subtitle-engine-compatibility",
+  "version": "1.1.6",
+  "private": true,
+  "description": "Compatibility fork of Thekingcrusher Subtitle Engine",
+  "scripts": {
+    "build": "node tools/build-manifest.js",
+    "test": "node tests/wyzie-and-injection.js && node tests/render-and-result-isolation.js"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}
