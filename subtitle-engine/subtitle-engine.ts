@@ -22,6 +22,7 @@ function init() {
         const filteredSubtitleResults = ctx.state<any[]>([])
         const isSearching = ctx.state<boolean>(false)
         const searchError = ctx.state<string>("")
+        const wyzieServer = ctx.state<string>("")
         const lastSearchedKey = ctx.state<string>("")
         const selectedSubUrls = ctx.state<string[]>([])
         const activeSession = ctx.state<boolean>(false)
@@ -36,6 +37,7 @@ function init() {
             subtitleResults.set([]);
             filteredSubtitleResults.set([]);
             searchError.set("");
+            wyzieServer.set("");
             lastSearchedKey.set("");
             autoSelected.set("");
             selectedSubUrls.set([]);
@@ -56,6 +58,7 @@ function init() {
         const imdbRef = ctx.fieldRef()
         const seasonRef = ctx.fieldRef()
         const episodeRef = ctx.fieldRef()
+        const mediaTypeRef = ctx.fieldRef<string>("series")
         const langRef = ctx.fieldRef<string>($getUserPreference("language"))
         const savedSource = $getUserPreference("source");
         const sourceRef = ctx.fieldRef<string>(["animetoshoSource", "jimakuSource"].includes(savedSource) ? savedSource : "all")
@@ -116,6 +119,7 @@ function init() {
                 const totalEpisodes = info.media?.episodes?.toString();
                 const eid = metadata.episodes[currentEpisode]?.anidbId?.toString();
                 const currentFormat = info.media?.format?.toUpperCase();
+                mediaTypeRef.setValue(currentFormat === "MOVIE" ? "movie" : "series");
 
                 if (sourceRef.current === "animetoshoSource" || sourceRef.current === "jimakuSource") {
                     if (sourceRef.current === "animetoshoSource") await fetchAnimeTosho(eid);
@@ -179,6 +183,7 @@ function init() {
                         const anidbId = metadata.mappings.anidbId;
                         const res = await fetch("https://raw.githubusercontent.com/Anime-Lists/anime-lists/refs/heads/master/anime-list-full.xml");
                         const xmlText = await res.text();
+                        if (generation !== searchGeneration) return;
                         const $ = LoadDoc(xmlText);
                         const animeNode = $(`anime[anidbid="${anidbId}"]`);
     
@@ -191,6 +196,7 @@ function init() {
                     } else if (method === "2") {
                         const res = await fetch(`https://ramregar97-idmapper.hf.space/api/mapper?anilist_id=${anilistId}`);
                         const data = await res.json();
+                        if (generation !== searchGeneration) return;
                         imdbId.set(data.tmdb_show_id?.toString() || data.themoviedb_id?.toString() || data.imdb_id?.toString());
                         imdbRef.setValue(data.tmdb_show_id?.toString() || data.themoviedb_id?.toString() || data.imdb_id?.toString());
                         const keys = data.tvdb_mappings ? Object.keys(data.tvdb_mappings) : [];
@@ -213,6 +219,7 @@ function init() {
                         const anidbId = metadata.mappings.anidbId;
                         const res = await fetch("https://raw.githubusercontent.com/Anime-Lists/anime-lists/refs/heads/master/anime-list-full.xml");
                         const xmlText = await res.text();
+                        if (generation !== searchGeneration) return;
                         const $ = LoadDoc(xmlText);
                         const animeNode = $(`anime[anidbid="${anidbId}"]`);
     
@@ -227,6 +234,7 @@ function init() {
                     } else if (method === "2") {
                         const res = await fetch(`https://ramregar97-idmapper.hf.space/api/mapper?anilist_id=${anilistId}`);
                         const data = await res.json();
+                        if (generation !== searchGeneration) return;
                         imdbId.set(data.tmdb_movie_id?.toString() || data.themoviedb_id?.toString() || data.imdb_id?.toString());
                         imdbRef.setValue(data.tmdb_movie_id?.toString() || data.themoviedb_id?.toString() || data.imdb_id?.toString());
                         const keys = data.tvdb_mappings ? Object.keys(data.tvdb_mappings) : [];
@@ -526,20 +534,25 @@ function init() {
 
         async function fetchSubtitles(isAuto = false, overrides: any = {}) {
             const generation = searchGeneration;
-            const id = imdbRef.current || imdbId.get();
-            const s = seasonRef.current || seasonNumber.get();
-            const ep = episodeRef.current || episodeNumber.get();
+            // Manual searches use only the visible fields, never an older playback value.
+            const id = isAuto ? (imdbRef.current || imdbId.get()) : imdbRef.current;
+            const movie = mediaTypeRef.current === "movie";
+            const s = movie ? "" : (isAuto ? (seasonRef.current || seasonNumber.get()) : seasonRef.current);
+            const ep = movie ? "" : (isAuto ? (episodeRef.current || episodeNumber.get()) : episodeRef.current);
             if (!id) return ctx.toast.warning("IMDB/TMDB ID not found");
             const key = String($getUserPreference("wyzieKey") || "").trim();
             searchError.set("");
             if (!key) {
+                wyzieServer.set("");
                 subtitleResults.set([]);
                 filteredSubtitleResults.set([]);
                 searchError.set("Add your Wyzie API key in Subtitle Engine preferences. Free keys: https://store.wyzie.io/redeem");
                 return;
             }
-            const currentKey = JSON.stringify([id, s, ep, key]);
+            const backupEnabled = $getUserPreference("wyzieBackup") === "true";
+            const currentKey = JSON.stringify([id, movie, s, ep, key, backupEnabled]);
             if (isAuto && lastSearchedKey.get() === currentKey) return;
+            wyzieServer.set("");
             isSearching.set(true);
             subtitleResults.set([]);
             filteredSubtitleResults.set([]);
@@ -547,8 +560,31 @@ function init() {
                 let url = "https://sub.wyzie.io/search?id=" + encodeURIComponent(id) + "&source=all";
                 if (s && ep) url += "&season=" + encodeURIComponent(s) + "&episode=" + encodeURIComponent(ep);
                 url += "&key=" + encodeURIComponent(key);
-                const res = await fetch(url);
-                const data = await res.json();
+                const backupUrl = url.replace("https://sub.wyzie.io/", "https://sub.wyzie.ru/");
+                let res;
+                let usedBackup = false;
+                try {
+                    res = await fetch(url);
+                } catch (err) {
+                    if (generation !== searchGeneration) return;
+                    if (!backupEnabled) throw err;
+                    usedBackup = true;
+                    res = await fetch(backupUrl);
+                }
+                if (generation !== searchGeneration) return;
+                // Retry once for outages, never for bad keys, quotas, or an empty search.
+                if (!usedBackup && backupEnabled && res.status >= 500 && res.status <= 599) {
+                    usedBackup = true;
+                    res = await fetch(backupUrl);
+                }
+                if (generation !== searchGeneration) return;
+                wyzieServer.set(usedBackup ? "backup" : "primary");
+                let data;
+                try {
+                    data = await res.json();
+                } catch (_) {
+                    throw new Error("Wyzie (" + res.status + "): Unexpected response");
+                }
                 if (generation !== searchGeneration) return;
                 if (!res.ok || !Array.isArray(data)) {
                     const message = data && typeof data.message === "string" ? data.message : "Unexpected response";
@@ -676,8 +712,10 @@ function init() {
         ctx.registerEventHandler("update", () => {
             resetSearchContext();
             ctx.setTimeout(async () => {
-                const info = await ctx.videoCore.getCurrentPlaybackInfo();
-                loadMediaData(parseInt(info.media.id));
+                if (activeSession.get()) {
+                    const info = await ctx.videoCore.getCurrentPlaybackInfo();
+                    if (info.media?.id) loadMediaData(parseInt(info.media.id));
+                }
                 tray.update();
             }, 50);
         });
@@ -688,10 +726,18 @@ function init() {
             const e = episodeRef.current;
           
             if (!id) return ctx.toast.warning("IMDB/TMDB ID is required");
-            if (s && !e) return ctx.toast.warning("Episode number required");
-            if (!s && e) return ctx.toast.warning("Season number required");
+            if (mediaTypeRef.current !== "movie") {
+                if (s && !e) return ctx.toast.warning("Episode number required");
+                if (!s && e) return ctx.toast.warning("Season number required");
+            }
 
+            resetSearchContext();
             fetchSubtitles(false);
+        });
+
+        ctx.registerEventHandler("searchTypeChanged", () => {
+            resetSearchContext();
+            tray.update();
         });
         
         let currentAnimeId = 0
@@ -706,6 +752,10 @@ function init() {
 
         ctx.screen.onNavigate(async (e) => {
             resetSearchContext();
+            imdbId.set(""); imdbRef.setValue("");
+            seasonNumber.set(""); seasonRef.setValue("");
+            episodeNumber.set(""); episodeRef.setValue("");
+            mediaTypeRef.setValue("series");
             if (e.pathname === "/entry" && e.searchParams.id) {
                 currentAnimeId = parseInt(e.searchParams.id)
                 activeSession.set(true);
@@ -747,7 +797,7 @@ function init() {
                         tray.flex([
                             tray.stack([
                                 tray.text("Subtitle Engine", { style: { fontSize: "18px", fontWeight: "700", color: "#FFF" } }),
-                                tray.text("Powered by Wyzie", { style: { fontSize: "11px", opacity: 0.5 } })
+                                tray.text(wyzieServer.get() === "backup" ? "Powered by Wyzie · backup server" : "Powered by Wyzie", { style: { fontSize: "11px", opacity: 0.5 } })
                             ]),
                             isSearching.get() 
                                 ? tray.badge("Syncing Providers...", { intent: "warning" }) 
@@ -756,10 +806,19 @@ function init() {
                     ], { style: { padding: "20px 20px 15px 20px" } }),
 
                     tray.stack([
+                        !integrated && tray.select("Search type", {
+                            fieldRef: mediaTypeRef,
+                            onChange: "searchTypeChanged",
+                            options: [
+                                { label: "Series", value: "series" },
+                                { label: "Movie", value: "movie" }
+                            ],
+                            style: { width: "160px" }
+                        }),
                         tray.flex([
                             !integrated && tray.input({ label: "IMDB/TMDB ID", fieldRef: imdbRef, style: { flex: 2 } }),
-                            !integrated && tray.input({ label: "S", fieldRef: seasonRef, style: { width: "55px" } }),
-                            !integrated && tray.input({ label: "E", fieldRef: episodeRef, style: { width: "55px" } }),
+                            !integrated && mediaTypeRef.current !== "movie" && tray.input({ label: "S", fieldRef: seasonRef, style: { width: "55px" } }),
+                            !integrated && mediaTypeRef.current !== "movie" && tray.input({ label: "E", fieldRef: episodeRef, style: { width: "55px" } }),
                             !integrated && tray.button({ 
                                 label: "Search", 
                                 onClick: "triggerManualSearch", 
@@ -876,7 +935,7 @@ function init() {
                             integrated && tray.switch("Sign/Song", { fieldRef: signRef, onChange: "filter" }),
                             integrated && tray.switch("Honorifics", { fieldRef: honorRef, onChange: "filter" }),
                         ].filter(Boolean), { padding: "4px 0" })
-                    ], { style: { padding: "0 20px 20px 20px", borderBottom: "3px solid rgba(255,255,255,0.08)" }, gap: 1.2 }),
+                    ].filter(Boolean), { style: { padding: "0 20px 20px 20px", borderBottom: "3px solid rgba(255,255,255,0.08)" }, gap: 1.2 }),
 
                     tray.div([
                         searchError.get() ?

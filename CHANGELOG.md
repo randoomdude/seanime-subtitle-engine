@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.7 — 2026-09-30
+
+- Detect movie playback and omit season/episode parameters for movie searches. Add a Movie/Series selector for manual searches and hide episode fields in Movie mode.
+- Manual searches use only their current fields, without borrowing a prior playback ID, season, or episode.
+- Clear playback mapping fields on navigation and ignore obsolete mapping responses before applying IDs.
+- Add an optional Wyzie backup preference, enabled by default. Retry once at `sub.wyzie.ru` for a connection failure or HTTP 500–599, preserving the same key and search parameters.
+- Do not retry authentication, quota, client errors, empty results, or malformed HTTP 200 responses. Show a backup-server label when it answers.
+- Retain native subtitle loading, safe result labels, Spanish variants, and Auto Select None.
+- Keep the manifest author field short enough for Seanime's validation; full maintainer and upstream attribution remains in the README.
+- Add regression coverage for movie detection, manual field isolation, retry eligibility/limit, disabled backup, and obsolete requests.
+
+Inspired by [José Martins's fork](https://github.com/jose-l-martins/seanime-subtitle-engine), with a separate outage-only retry implementation. Both Wyzie hosts accepted a personal free key and returned Spanish results in the live test. Spanish player playback remains pending user confirmation.
+
 ## 1.1.6 — 2026-09-30
 
 - Normalize subtitle result titles, media labels, languages, and formats. Wyzie AI entries can omit release names; label these as AI translations instead of passing null to Seanime's text component.
@@ -10,7 +23,7 @@
 - Use language-filtered results for automatic Wyzie selection.
 - Add regression fixtures for null-title rendering, empty Jimaku searches, and a late Wyzie response after navigation.
 
-This corrects the `TypeError: text is required` popup observed in the local 1.1.5 test and stale result reuse when switching to Jimaku. Latest live playback verification is pending.
+This corrects the `TypeError: text is required` popup observed in the local 1.1.5 test and stale result reuse when switching to Jimaku. The user subsequently demonstrated Jimaku subtitle playback; Spanish playback verification remains pending.
 
 ## 1.1.5 — 2026-09-30 — local test
 

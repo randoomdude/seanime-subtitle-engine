@@ -33,6 +33,7 @@ async function run() {
   await t.fetchJimaku(212888,1,1,12);
   assert.equal(t.filteredSubtitleResults.get().length,0,'Jimaku no-entry response must not retain Wyzie results');
   render();
+  t.imdbRef.setValue('13916');t.seasonRef.setValue('1');t.episodeRef.setValue('1');
   let resolveOld;
   const oldData=new Promise(resolve=>{resolveOld=resolve});
   context.fetch=async()=>({ok:true,status:200,json:async()=>oldData});
